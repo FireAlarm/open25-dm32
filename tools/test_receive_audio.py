@@ -19,7 +19,7 @@ def main():
            '-Itests/audio/stubs','-Iintegration/radiofoundry','-I'+str(APP/'core'),
            '-I'+str(APP/'hal'),'-DCONFIG_P25_NATIVE=1']
     objects=[]
-    sources=[ROOT/'src/p25'/f'{name}.c' for name in ('p25','voice','phy_stream','selftest','audio_fifo')]
+    sources=[ROOT/'src/p25'/f'{name}.c' for name in ('p25','crypto','voice','phy_stream','selftest','audio_fifo')]
     sources += [ROOT/'integration/radiofoundry/p25_lab.c',ROOT/'integration/radiofoundry/cpu_profile.c',APP/'core/debuglink/dl_fmt.c',APP/'core/radio/beep.c',ROOT/'tests/audio/test_receive_lab.c']
     for source in sources:
         obj=OUT/(source.stem+'.o')

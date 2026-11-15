@@ -32,7 +32,7 @@ def main():
     flags = ["-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
              "-fno-omit-frame-pointer", "-Isrc/p25", "-Isrc/codec", "-I" + str(OUT)]
     objects = []
-    for name in ("p25", "voice", "phy_stream", "selftest"):
+    for name in ("p25", "crypto", "voice", "phy_stream", "selftest"):
         obj = OUT / (name + ".o")
         run(["clang", "-std=c11", *flags, "-c", ROOT / "src/p25" / (name + ".c"), "-o", obj])
         objects.append(obj)

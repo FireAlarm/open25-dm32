@@ -4,6 +4,8 @@
 
 static void admission_reset(p25_voice *v)
 {
+    v->rx_key = NULL;
+    v->rx_have_mi = 0;
     v->crypto_clear = v->have_group = 0;
     v->active_nac = P25_NAC_ANY;
     v->active_group = 0;
@@ -28,6 +30,33 @@ void p25_voice_init(p25_voice *v, uint16_t nac, uint16_t group,
     v->group_filter = group;
     p25_rx_init(&v->framer, nac == 0xf7e ? P25_NAC_ANY : nac, 2);
     admission_reset(v);
+}
+
+void p25_voice_set_keys(p25_voice *v, const p25_key *keys, unsigned count)
+{
+    v->keys = keys;
+    v->key_count = (uint8_t)(keys && count < 255 ? count : 0);
+    v->rx_key = NULL;
+    v->rx_have_mi = 0;
+}
+
+/* Take the encryption sync from an HDU or LDU2 and find its key. An LDU2 MI
+ * applies to the superframe it arrives in, so late entry recovers from it. */
+static void rx_sync(p25_voice *v, const p25_decoded *d)
+{
+    unsigned i;
+    v->rx_key = NULL;
+    v->rx_have_mi = 0;
+    if (d->clear_voice) return;
+    v->rx_algorithm = d->algorithm_id;
+    v->rx_key_id = d->key_id;
+    memcpy(v->rx_mi, d->message_indicator, P25_MI_BYTES);
+    v->rx_have_mi = 1;
+    for (i = 0; i < v->key_count; i++)
+        if (v->keys[i].algorithm_id == d->algorithm_id && v->keys[i].key_id == d->key_id) {
+            v->rx_key = &v->keys[i];
+            break;
+        }
 }
 
 void p25_voice_rx_dibit(p25_voice *v, uint8_t dibit)
@@ -60,6 +89,7 @@ void p25_voice_rx_dibit(p25_voice *v, uint8_t dibit)
         v->crypto_clear = d.clear_voice;
         v->active_group = d.talkgroup;
         v->have_group = d.talkgroup != 0;
+        rx_sync(v, &d);
     } else if (d.nid.duid == P25_DUID_LDU1) {
         if ((v->have_group && v->active_group != d.talkgroup) ||
             (v->active_source && v->active_source != d.source_id))
@@ -72,9 +102,16 @@ void p25_voice_rx_dibit(p25_voice *v, uint8_t dibit)
          * Late entry waits for a valid LDU2 encryption sync. */
     } else if (d.nid.duid == P25_DUID_LDU2) {
         v->crypto_clear = d.clear_voice;
+        rx_sync(v, &d);
     }
     if (d.nid.duid != P25_DUID_LDU1 && d.nid.duid != P25_DUID_LDU2) return;
-    int admitted = v->crypto_clear && v->have_group &&
+    unsigned ldu = d.nid.duid == P25_DUID_LDU2;
+    /* Encrypted voice plays only with a matching key and a known MI; anything
+     * else stays muted, as before. Late entry waits for an LDU2. */
+    int decrypt = !v->crypto_clear && v->rx_have_mi && v->rx_key &&
+        !p25_keystream_ldu(v->rx_key, v->rx_mi, ldu, v->rx_ks);
+    if (!v->crypto_clear && v->rx_have_mi && !v->rx_key) v->rx_no_key++;
+    int admitted = (v->crypto_clear || decrypt) && v->have_group &&
         (!v->group_filter || v->active_group == v->group_filter || v->active_group == 0xffff);
     for (unsigned i = 0; i < 9; i++) {
         int16_t pcm[160] = {0};
@@ -82,6 +119,10 @@ void p25_voice_rx_dibit(p25_voice *v, uint8_t dibit)
         /* Conservative implementation policy, not a TIA concealment rule.
          * Golay/Hamming can miscorrect beyond t; no audio-quality claim. */
         else {
+            if (decrypt) {
+                p25_crypt_imbe(d.imbe[i], v->rx_ks + P25_KS_VOICE_BYTES * i);
+                v->rx_decrypted++;
+            }
             at=v->micros?v->micros():0;
             int ok=d.voice_u0_corrected_bits[i] <= 3 && d.voice_corrected_bits[i] <= 10 &&
                    dm32_imbe_decode(&v->codec, d.imbe[i], pcm);
@@ -95,6 +136,19 @@ void p25_voice_rx_dibit(p25_voice *v, uint8_t dibit)
         }
         if (v->sink) v->sink(v->sink_ctx, pcm);
     }
+    /* The next superframe's LDU1 uses the advanced MI; its LDU2 will confirm. */
+    if (ldu && !v->crypto_clear && v->rx_have_mi) p25_mi_advance(v->rx_mi);
+}
+
+int p25_voice_set_tx_key(p25_voice *v, const p25_key *key, uint32_t (*random32)(void))
+{
+    if (v->transmitting) return 0;
+    if (!key) { v->tx_encrypt = 0; return 1; }
+    if (!p25_key_length(key->algorithm_id) || !random32) return 0;
+    v->tx_key = *key;
+    v->random32 = random32;
+    v->tx_encrypt = 1;
+    return 1;
 }
 
 static p25_voice_packet *next_packet(p25_voice *v)
@@ -131,7 +185,24 @@ int p25_voice_tx_begin(p25_voice *v, const p25_call *call)
         !call->source_id || call->source_id > 9999999u) return 0;
     p25_voice_tx_abort(v);
     v->fault = 0;
-    if (p25_encode_hdu(call, v->queue[0].data)) return 0;
+    p25_crypto_sync sync = {0}, *sp = NULL;
+    if (v->tx_encrypt) {
+        /* Fresh random 72-bit MI per call. An all-zero MI is the LFSR's fixed
+         * point, so it is never used. */
+        for (unsigned i = 0; i < P25_MI_BYTES; i += 4) {
+            uint32_t r = v->random32();
+            for (unsigned j = 0; j < 4 && i + j < P25_MI_BYTES; j++)
+                v->tx_mi[i + j] = (uint8_t)(r >> (8 * j));
+        }
+        if (!(v->tx_mi[0] | v->tx_mi[1] | v->tx_mi[2] | v->tx_mi[3] |
+              v->tx_mi[4] | v->tx_mi[5] | v->tx_mi[6] | v->tx_mi[7])) v->tx_mi[0] = 1;
+        v->tx_mi[8] = 0;
+        sync.algorithm_id = v->tx_key.algorithm_id;
+        sync.key_id = v->tx_key.key_id;
+        memcpy(sync.message_indicator, v->tx_mi, P25_MI_BYTES);
+        sp = &sync;
+    }
+    if (p25_encode_hdu_ex(call, sp, v->queue[0].data)) return 0;
     v->call = *call;
     v->transmitting = 1;
     v->next_duid = P25_DUID_LDU1;
@@ -143,11 +214,26 @@ int p25_voice_tx_pcm(p25_voice *v, int16_t pcm[160])
 {
     if (!v->transmitting || v->stopping || !pcm) return 0;
     if (!dm32_imbe_encode(&v->codec, pcm, v->voice[v->voice_count])) return fail(v);
+    if (v->tx_encrypt) {
+        /* The codec keeps the clear frame; only the transmitted copy is XORed. */
+        if (!v->voice_count &&
+            p25_keystream_ldu(&v->tx_key, v->tx_mi, v->next_duid == P25_DUID_LDU2, v->tx_ks))
+            return fail(v);
+        p25_crypt_imbe(v->voice[v->voice_count], v->tx_ks + P25_KS_VOICE_BYTES * v->voice_count);
+    }
     if (++v->voice_count < 9) return 1;
     p25_voice_packet *p = next_packet(v);
     const uint8_t lsd[2] = {0, 0};
-    if (!p || p25_encode_ldu(&v->call, v->next_duid, v->voice, lsd, p->data)) return fail(v);
+    p25_crypto_sync sync = {0};
+    if (v->tx_encrypt) {
+        sync.algorithm_id = v->tx_key.algorithm_id;
+        sync.key_id = v->tx_key.key_id;
+        memcpy(sync.message_indicator, v->tx_mi, P25_MI_BYTES);
+    }
+    if (!p || p25_encode_ldu_ex(&v->call, v->tx_encrypt ? &sync : NULL, v->next_duid, v->voice, lsd, p->data))
+        return fail(v);
     commit_packet(v, P25_LDU_BYTES);
+    if (v->tx_encrypt && v->next_duid == P25_DUID_LDU2) p25_mi_advance(v->tx_mi);
     v->voice_count = 0;
     v->next_duid ^= P25_DUID_LDU1 ^ P25_DUID_LDU2;
     v->started = 1;

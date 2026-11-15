@@ -434,12 +434,34 @@ static void group_lc(const p25_call *call, uint8_t lc[9])
     lc[6] = (uint8_t)(call->source_id >> 16); lc[7] = (uint8_t)(call->source_id >> 8); lc[8] = (uint8_t)call->source_id;
 }
 
+/* A sync describes an encrypted call only for a known non-clear algorithm. */
+static int sync_valid(const p25_crypto_sync *sync)
+{
+    return sync->algorithm_id == 0x80 || sync->algorithm_id == 0x81 ||
+           sync->algorithm_id == 0x84 || sync->algorithm_id == 0xaa;
+}
+
+static int sync_encrypted(const p25_crypto_sync *sync)
+{
+    return sync && sync->algorithm_id != 0x80;
+}
+
 int p25_encode_hdu(const p25_call *call, uint8_t out[P25_HDU_BYTES])
+{
+    return p25_encode_hdu_ex(call, NULL, out);
+}
+
+int p25_encode_hdu_ex(const p25_call *call, const p25_crypto_sync *sync, uint8_t out[P25_HDU_BYTES])
 {
     uint8_t payload[15] = {0}, symbols[36];
     unsigned i;
-    if (!out || !valid_call(call)) return -1;
+    if (!out || !valid_call(call) || (sync && !sync_valid(sync))) return -1;
     payload[9] = call->manufacturer_id; payload[10] = 0x80; /* clear */
+    if (sync_encrypted(sync)) {
+        memcpy(payload, sync->message_indicator, 9);
+        payload[10] = sync->algorithm_id;
+        payload[11] = (uint8_t)(sync->key_id >> 8); payload[12] = (uint8_t)sync->key_id;
+    }
     payload[13] = (uint8_t)(call->talkgroup >> 8); payload[14] = (uint8_t)call->talkgroup;
     bytes_to_symbols(payload, 20, symbols);
     p25_rs_encode(symbols, 20, 16, symbols);
@@ -462,15 +484,30 @@ static unsigned voice_permutation(unsigned bit)
 
 int p25_encode_ldu(const p25_call *call, uint8_t duid, const uint16_t imbe[9][8], const uint8_t lsd[2], uint8_t out[P25_LDU_BYTES])
 {
+    return p25_encode_ldu_ex(call, NULL, duid, imbe, lsd, out);
+}
+
+int p25_encode_ldu_ex(const p25_call *call, const p25_crypto_sync *sync, uint8_t duid, const uint16_t imbe[9][8], const uint8_t lsd[2], uint8_t out[P25_LDU_BYTES])
+{
     uint8_t payload[12] = {0}, symbols[24], cw[18];
     uint16_t u[8];
     unsigned count, parity, i, j;
-    if (!out || !imbe || !lsd || !valid_call(call) || (duid != P25_DUID_LDU1 && duid != P25_DUID_LDU2)) return -1;
+    if (!out || !imbe || !lsd || !valid_call(call) || (duid != P25_DUID_LDU1 && duid != P25_DUID_LDU2) ||
+        (sync && !sync_valid(sync))) return -1;
     /* Validate every frame before touching caller output. */
     for (i = 0; i < 9; ++i) for (j = 0; j < 8; ++j)
         if (imbe[i][j] >= (1u << (j < 4 ? 12 : j < 7 ? 11 : 7))) return -1;
-    if (duid == P25_DUID_LDU1) { group_lc(call, payload); count = 12; parity = 12; }
-    else { payload[9] = 0x80; count = 16; parity = 8; }
+    if (duid == P25_DUID_LDU1) {
+        group_lc(call, payload); count = 12; parity = 12;
+        if (sync_encrypted(sync)) payload[2] |= 0x40; /* protected */
+    } else {
+        payload[9] = 0x80; count = 16; parity = 8;
+        if (sync_encrypted(sync)) {
+            memcpy(payload, sync->message_indicator, 9);
+            payload[9] = sync->algorithm_id;
+            payload[10] = (uint8_t)(sync->key_id >> 8); payload[11] = (uint8_t)sync->key_id;
+        }
+    }
     bytes_to_symbols(payload, count, symbols);
     p25_rs_encode(symbols, count, parity, symbols);
     frame_start(out, P25_LDU_BYTES, call, duid);

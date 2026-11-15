@@ -61,6 +61,16 @@ typedef struct {
     uint16_t imbe[9][8];
 } p25_decoded;
 
+/* Encryption sync carried in the HDU and in every LDU2. algorithm_id 0x80 or a
+ * NULL pointer means clear voice. For an encrypted call the LDU1 link control
+ * also sets the "protected" service-options bit (0x40). Passing NULL to the
+ * _ex encoders yields exactly the frames of p25_encode_hdu/p25_encode_ldu. */
+typedef struct {
+    uint8_t algorithm_id;
+    uint16_t key_id;
+    uint8_t message_indicator[9];
+} p25_crypto_sync;
+
 uint64_t p25_nid_encode(uint16_t nac, uint8_t duid);
 /* Full (63,16,23) BCH correction plus the DUID-specific NID parity check.
  * Rejects codewords >11 bits from the reconstructed 64-bit codeword.
@@ -73,6 +83,11 @@ int p25_encode_hdu(const p25_call *call, uint8_t out[P25_HDU_BYTES]);
 int p25_encode_ldu(const p25_call *call, uint8_t duid,
                    const uint16_t imbe[P25_IMBE_FRAMES][8],
                    const uint8_t low_speed_data[2], uint8_t out[P25_LDU_BYTES]);
+int p25_encode_hdu_ex(const p25_call *call, const p25_crypto_sync *sync,
+                      uint8_t out[P25_HDU_BYTES]);
+int p25_encode_ldu_ex(const p25_call *call, const p25_crypto_sync *sync, uint8_t duid,
+                      const uint16_t imbe[P25_IMBE_FRAMES][8],
+                      const uint8_t low_speed_data[2], uint8_t out[P25_LDU_BYTES]);
 int p25_encode_tdu(const p25_call *call, uint8_t out[P25_TDU_BYTES]);
 int p25_encode_tdulc(const p25_call *call, uint8_t out[P25_TDULC_BYTES]);
 int p25_decode_frame(const uint8_t *frame, size_t bytes, p25_decoded *result);
