@@ -103,6 +103,26 @@
 !/tools/bootstrap_newlib.sh
 !/tools/bootstrap_toolchain.sh
 !/tools/build_radiofoundry.py
+# P25 voice encryption (feature/p25-encryption): cipher library, key store, cable loader and their tests.
+# Added by hand; this file is otherwise generated from the reviewed source list, so review these lines.
+!/ENCRYPTION.md
+!/src/p25/crypto.c
+!/src/p25/crypto.h
+!/src/p25/keystore.c
+!/src/p25/keystore.h
+!/src/p25/keyload.c
+!/src/p25/keyload.h
+!/src/p25/nonce.c
+!/src/p25/nonce.h
+!/integration/radiofoundry/p25_keys.c
+!/integration/radiofoundry/p25_keys.h
+!/tests/crypto/test_crypto.c
+!/tests/crypto/test_voice_crypto.c
+!/tests/keys/test_keys.c
+!/tests/keys/harness.c
+!/tools/test_crypto.py
+!/tools/test_keys.py
+!/tools/p25_keyload.py
 !/tools/codec_cache.py
 !/tools/classic_channels.py
 !/tools/prepare_web_firmware.py

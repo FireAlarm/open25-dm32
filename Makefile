@@ -1,4 +1,4 @@
-.PHONY: radiofoundry sources toolchain protocol-test crypto-test codec-test runtime-test voice-test native-test receive-audio-test classic-test test
+.PHONY: radiofoundry sources toolchain protocol-test crypto-test keys-test codec-test runtime-test voice-test native-test receive-audio-test classic-test test
 
 radiofoundry:
 	python3 tools/build_radiofoundry.py --classic --stack-check
@@ -15,6 +15,9 @@ protocol-test:
 
 crypto-test:
 	python3 tools/test_crypto.py
+
+keys-test:
+	python3 tools/test_keys.py
 
 codec-test:
 	python3 tools/test_codec_slot.py
@@ -41,4 +44,4 @@ receive-audio-test:
 classic-test:
 	python3 tools/test_classic.py
 
-test: protocol-test crypto-test codec-test runtime-test voice-test native-test receive-audio-test classic-test
+test: protocol-test crypto-test keys-test codec-test runtime-test voice-test native-test receive-audio-test classic-test

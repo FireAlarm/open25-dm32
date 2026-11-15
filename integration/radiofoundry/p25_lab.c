@@ -2,6 +2,7 @@
 /* User-authorized development derivative; not an MIT-only upstream submission. */
 #include <string.h>
 #include "p25_lab.h"
+#include "p25_keys.h"
 #include "selftest.h"
 #include "phy_stream.h"
 #include "audio_fifo.h"
@@ -144,7 +145,9 @@ static int live_run(void)
     uint8_t raw[36],queued=0;
     unsigned lead=3;
     bool kicked=false,sealed=false,closed=false;
-    bool ok=p25_voice_tx_begin(&voice,&call)!=0;
+    /* Fail closed: if encryption is selected but its key or nonce source is not ready,
+     * the call is refused here, before the PA is keyed, never sent in the clear. */
+    bool ok=p25_keys_apply(&voice,1) && p25_voice_tx_begin(&voice,&call)!=0;
     uint32_t sid=live_sid;
     live_mic_frames=live_peak=live_encode_max=live_encode_us=live_slow=live_encoded=0;
     live_first_us=live_last_us=live_fifo_high=live_overflows=0;
@@ -349,6 +352,7 @@ static int receive_run(void)
     session=gaps=unsupported=0;native_state=native_reason=0;pcm_crc=sample_checks?0xffffffffu:0;
     memset(&phy,0,sizeof phy);p25_audio_fifo_reset(&fifo);
     p25_voice_init(&voice,nac,group,sink,NULL);voice.micros=sample_checks?hal_micros:NULL;
+    (void)p25_keys_apply(&voice,0); /* receive keys only; transmit is armed at PTT */
     int ok=1;
 #if CONFIG_P25_NATIVE
     /* Playback also borrows native RX ownership to exclude normal beeps/PTT and
@@ -470,6 +474,7 @@ static void run(void *ctx)
 #endif
 void p25_lab_start(void)
 {
+    p25_keys_start();
     if(xTaskCreate(run,"p25-lab",P25_WORKER_WORDS,NULL,3,&worker)!=pdPASS) { worker=NULL;state=4; }
 }
 /* Private 0x20: diagnostics, bounded RAM capture replay and RX audio.
