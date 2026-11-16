@@ -142,3 +142,4 @@ __pycache__/
 /experiments/codec/out/
 /tests/protocol/vectors/
 /tests/protocol/results.json
+!/.github/workflows/build-firmware.yml

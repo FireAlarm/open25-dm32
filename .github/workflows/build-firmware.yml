@@ -1,0 +1,48 @@
+name: Build firmware ZIP
+# Builds the C-SKY toolchain (cached), the Classic firmware with the P25
+# encryption feature, runs the host tests, and uploads the application-only ZIP.
+# Hardware-untested: back up BOTH chips before flashing anything.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/p25-encryption]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgmp-dev libmpfr-dev libmpc-dev texinfo flex bison xz-utils python3
+      - name: Cache toolchain
+        id: tc
+        uses: actions/cache@v4
+        with:
+          path: |
+            toolchain
+            research/toolchain
+          key: csky-toolchain-${{ hashFiles('tools/bootstrap_toolchain.sh', 'tools/bootstrap_newlib.sh', 'sources.lock.json') }}
+      - name: Fetch pinned sources
+        run: python3 tools/sources.py fetch
+      - name: Build toolchain
+        if: steps.tc.outputs.cache-hit != 'true'
+        run: |
+          sh tools/bootstrap_toolchain.sh
+          sh tools/bootstrap_newlib.sh
+      - name: Host tests (protocol, crypto, key loader)
+        run: make protocol-test crypto-test keys-test
+      - name: Build firmware
+        run: make radiofoundry
+      - name: Package application ZIP
+        run: |
+          python3 tools/prepare_web_firmware.py \
+            --image build/radiofoundry-p25/build/dm32-p25-classic/rfoundry_dm32.bin \
+            --out build/Open25-DM32-Classic-encryption-application.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open25-dm32-encryption-zip
+          path: |
+            build/Open25-DM32-Classic-encryption-application.zip
+            build/radiofoundry-p25/build/dm32-p25-classic/*.map
